@@ -1,0 +1,24 @@
+# Android build outputs
+build/
+dist/
+out/
+*.apk
+*.idsig
+*.dex
+*.class
+
+# Signing keys — never commit a keystore
+keystore/
+*.jks
+*.keystore
+
+# Toolchain and cached downloads
+.cache/
+.toolchains/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp

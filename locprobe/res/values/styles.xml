@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="ProbeTheme" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#0B0F14</item>
+        <item name="android:navigationBarColor">#0B0F14</item>
+        <item name="android:windowBackground">#0B0F14</item>
+        <item name="android:textColorPrimary">#E6EDF3</item>
+        <item name="android:colorAccent">#3DDC97</item>
+    </style>
+</resources>

@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"/>
+<title>选择位置</title>
+<link rel="stylesheet" href="leaflet.css"/>
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#0B0F14; }
+  #map { position:absolute; left:0; top:0; right:0; bottom:0; background:#0B0F14; }
+  .leaflet-container { background:#0B0F14; font-family:-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .leaflet-control-attribution { background:rgba(11,15,20,.75) !important; color:#5E6B7A !important; font-size:10px; }
+  .leaflet-control-attribution a { color:#8B98A9 !important; }
+  .pin { width:18px; height:18px; border-radius:50%; background:#3DDC97; border:3px solid #0B0F14;
+         box-shadow:0 0 0 3px rgba(61,220,151,.35), 0 4px 12px rgba(0,0,0,.65); }
+  .city-label { background:none; border:none; }
+  .city-label span { position:absolute; left:6px; top:-7px; color:#B7C9D8; font-size:11px;
+         white-space:nowrap; text-shadow:0 0 3px #000, 0 0 6px #000; }
+  #searchBar { position:absolute; left:12px; right:12px; top:10px; z-index:1000; }
+  #searchBar .row { display:flex; align-items:center; background:rgba(20,26,34,.96);
+         border:1px solid #2C3846; border-radius:14px; padding:0 10px; height:44px; }
+  #searchBar input { flex:1; background:none; border:none; outline:none; color:#E6EDF3;
+         font-size:14px; padding:0 8px; height:42px; }
+  #searchBar input::placeholder { color:#5E6B7A; }
+  #searchBar .ic { color:#5E6B7A; font-size:16px; }
+  #clear { color:#8B98A9; font-size:18px; padding:0 4px; display:none; }
+  #results { margin-top:6px; background:rgba(20,26,34,.98); border:1px solid #2C3846;
+         border-radius:14px; overflow:hidden; display:none; max-height:46vh; overflow-y:auto; }
+  #results .item { padding:9px 12px; border-bottom:1px solid #1D2631; cursor:pointer; }
+  #results .item:last-child { border-bottom:none; }
+  #results .item b { color:#E6EDF3; font-size:14px; font-weight:600; margin-right:8px; }
+  #results .item span { color:#8B98A9; font-size:11px; }
+  #results .item:active { background:#1B2530; }
+  #results .empty { padding:12px; color:#5E6B7A; font-size:12px; }
+  #warn { position:absolute; left:12px; right:12px; bottom:104px; z-index:900;
+          background:rgba(20,26,34,.96); border:1px solid #3A2A1A; border-radius:12px;
+          padding:10px 12px; color:#FFB454; font-size:12px; display:none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+
+<div id="searchBar">
+  <div class="row">
+    <span class="ic">⌕</span>
+    <input id="q" type="search" placeholder="搜城市/地名（离线可用，支持拼音与中文）" autocomplete="off" spellcheck="false"/>
+    <span id="clear">×</span>
+  </div>
+  <div id="results"></div>
+</div>
+
+<div id="warn">在线瓦片加载失败（网络受限），已切回离线底图。</div>
+
+<script src="leaflet.js"></script>
+<script src="geo/land.js"></script>
+<script src="geo/countries.js"></script>
+<script src="geo/cities.js"></script>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var lat = parseFloat(q.get('lat'));
+  var lng = parseFloat(q.get('lng'));
+  var zoom = parseFloat(q.get('z'));
+  if (isNaN(lat) || isNaN(lng)) { lat = 39.908722; lng = 116.397499; }
+  if (isNaN(zoom)) { zoom = 4; }
+
+  var map = L.map('map', {
+    zoomControl: false,
+    attributionControl: true,
+    preferCanvas: true,
+    minZoom: 2,
+    maxZoom: 16
+  }).setView([lat, lng], zoom);
+
+  var LAND = window.GEO_LAND || { features: [] };
+  var COUNTRIES = window.GEO_COUNTRIES || { features: [] };
+  var CITIES = window.GEO_CITIES || [];
+
+  var offlineGroup = L.layerGroup();
+  var citiesGroup = L.layerGroup();
+  var onlineLayer = null;
+  var mode = 'offline';
+  var warned = false;
+
+  L.geoJSON(LAND, {
+    style: { color: '#26323F', weight: 1, fillColor: '#151D27', fillOpacity: 1 },
+    interactive: false
+  }).addTo(offlineGroup);
+  L.geoJSON(COUNTRIES, {
+    style: { color: '#2C3846', weight: 0.8, fillOpacity: 0 },
+    interactive: false
+  }).addTo(offlineGroup);
+  offlineGroup.addTo(map);
+
+  var icon = L.divIcon({ className: '', html: '<div class="pin"></div>', iconSize: [18, 18], iconAnchor: [9, 9] });
+  var marker = L.marker([lat, lng], { icon: icon, draggable: true }).addTo(map);
+  var hereMarker = null;
+
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch];
+    });
+  }
+
+  function pick() {
+    var p = marker.getLatLng();
+    if (window.Android && Android.onPick) { Android.onPick(p.lat.toFixed(6), p.lng.toFixed(6)); }
+  }
+
+  marker.on('dragend', pick);
+  map.on('click', function (e) {
+    marker.setLatLng(e.latlng);
+    pick();
+    hideResults();
+  });
+
+  function minPopForZoom(z) {
+    if (z >= 10) { return 0; }
+    if (z >= 8) { return 120000; }
+    if (z >= 6) { return 400000; }
+    if (z >= 4) { return 1500000; }
+    return Infinity;
+  }
+
+  function renderCities() {
+    var z = map.getZoom();
+    var minPop = minPopForZoom(z);
+    citiesGroup.clearLayers();
+    var shown = CITIES.filter(function (c) { return c.p >= minPop; })
+      .sort(function (a, b) { return b.p - a.p; })
+      .slice(0, 700);
+    var showLabels = z >= 4;
+    for (var i = 0; i < shown.length; i++) {
+      var c = shown[i];
+      L.circleMarker([c.y, c.x], {
+        radius: z >= 9 ? 4 : 3,
+        color: '#0B0F14',
+        weight: 1,
+        fillColor: '#3DDC97',
+        fillOpacity: 0.95,
+        interactive: false
+      }).addTo(citiesGroup);
+      if (showLabels) {
+        L.marker([c.y, c.x], {
+          icon: L.divIcon({ className: 'city-label', html: '<span>' + esc(c.z || c.n) + '</span>', iconSize: null }),
+          interactive: false,
+          keyboard: false
+        }).addTo(citiesGroup);
+      }
+    }
+  }
+
+  map.on('zoomend', renderCities);
+  renderCities();
+
+  function showWarn() {
+    if (warned) { return; }
+    warned = true;
+    var w = document.getElementById('warn');
+    if (w) { w.style.display = 'block'; }
+    if (window.Android && Android.onTileError) { Android.onTileError(); }
+    window.setMode('offline');
+  }
+
+  window.setMode = function (m) {
+    mode = m;
+    if (m === 'online') {
+      if (!onlineLayer) {
+        onlineLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          minZoom: 3,
+          attribution: '&copy; OpenStreetMap'
+        });
+        onlineLayer.on('tileerror', showWarn);
+        onlineLayer.addTo(map);
+      }
+      offlineGroup.remove();
+      citiesGroup.remove();
+    } else {
+      if (onlineLayer) {
+        map.removeLayer(onlineLayer);
+        onlineLayer = null;
+      }
+      offlineGroup.addTo(map);
+      citiesGroup.addTo(map);
+      renderCities();
+    }
+  };
+
+  window.setHere = function (la, ln) {
+    var p = L.latLng(la, ln);
+    if (hereMarker) {
+      hereMarker.setLatLng(p);
+    } else {
+      hereMarker = L.circleMarker(p, {
+        radius: 9, color: '#3DDC97', weight: 3, fillColor: '#3DDC97', fillOpacity: 0.22
+      }).addTo(map);
+    }
+    marker.setLatLng(p);
+    map.setView(p, Math.max(map.getZoom(), 11));
+    pick();
+  };
+
+  // ---------- 搜索 ----------
+  var input = document.getElementById('q');
+  var results = document.getElementById('results');
+  var clearBtn = document.getElementById('clear');
+
+  function norm(s) {
+    return String(s || '').toLowerCase().replace(/\s+/g, '');
+  }
+
+  function search(kw) {
+    kw = norm(kw);
+    if (!kw) { return []; }
+    var hits = [];
+    for (var i = 0; i < CITIES.length && hits.length < 18; i++) {
+      var c = CITIES[i];
+      var n = norm(c.n);
+      var z = norm(c.z);
+      if (z && z.indexOf(kw) === 0) { hits.push(c); continue; }
+      if (n.indexOf(kw) === 0) { hits.push(c); continue; }
+      if (n.indexOf(kw) >= 0 || (z && z.indexOf(kw) >= 0)) { hits.push(c); }
+    }
+    return hits;
+  }
+
+  function hideResults() {
+    results.style.display = 'none';
+    results.innerHTML = '';
+    clearBtn.style.display = 'none';
+  }
+
+  function showResults(list) {
+    results.innerHTML = '';
+    if (!list.length) {
+      results.innerHTML = '<div class="empty">没有匹配的地名，换个写法试试（支持拼音/英文/中文）</div>';
+      results.style.display = 'block';
+      return;
+    }
+    list.forEach(function (c) {
+      var d = document.createElement('div');
+      d.className = 'item';
+      var pop = c.p >= 1000000 ? (c.p / 1000000).toFixed(1) + 'M'
+        : (c.p >= 1000 ? Math.round(c.p / 1000) + 'K' : String(c.p));
+      d.innerHTML = '<b>' + esc(c.z || c.n) + '</b><span>' + esc(c.n) + ' · ' + esc(c.c) + ' · ' + pop + '</span>';
+      d.addEventListener('click', function () {
+        marker.setLatLng([c.y, c.x]);
+        map.setView([c.y, c.x], 11);
+        if (window.Android && Android.onPick) { Android.onPick(c.y.toFixed(6), c.x.toFixed(6)); }
+        hideResults();
+        input.blur();
+      });
+      results.appendChild(d);
+    });
+    results.style.display = 'block';
+  }
+
+  var timer = null;
+  input.addEventListener('input', function () {
+    clearBtn.style.display = input.value ? 'block' : 'none';
+    if (timer) { clearTimeout(timer); }
+    timer = setTimeout(function () { showResults(search(input.value)); }, 120);
+  });
+  input.addEventListener('focus', function () {
+    if (input.value) { showResults(search(input.value)); }
+  });
+  clearBtn.addEventListener('click', function () {
+    input.value = '';
+    hideResults();
+    input.focus();
+  });
+
+  // ---------- 缩放按钮 ----------
+  var zoomBox = L.control({ position: 'topright' });
+  zoomBox.onAdd = function () {
+    var box = L.DomUtil.create('div', 'leaflet-bar');
+    box.style.cssText = 'margin-top:64px;background:rgba(20,26,34,.92);border:1px solid #2C3846;border-radius:12px;overflow:hidden;';
+    var plus = L.DomUtil.create('a', '', box);
+    plus.innerHTML = '+';
+    plus.href = '#';
+    plus.style.cssText = 'display:block;width:40px;height:40px;line-height:38px;text-align:center;color:#3DDC97;font-size:22px;text-decoration:none;';
+    plus.onclick = function (e) { e.preventDefault(); map.zoomIn(); };
+    var minus = L.DomUtil.create('a', '', box);
+    minus.innerHTML = '−';
+    minus.href = '#';
+    minus.style.cssText = 'display:block;width:40px;height:40px;line-height:36px;text-align:center;color:#3DDC97;font-size:22px;text-decoration:none;border-top:1px solid #2C3846;';
+    minus.onclick = function (e) { e.preventDefault(); map.zoomOut(); };
+    L.DomEvent.disableClickPropagation(box);
+    return box;
+  };
+  zoomBox.addTo(map);
+
+  L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(map);
+
+  pick();
+  if (window.Android && Android.onReady) { Android.onReady(); }
+  setTimeout(function () { map.invalidateSize(); }, 200);
+})();
+</script>
+</body>
+</html>

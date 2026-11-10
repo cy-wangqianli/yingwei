@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="probe_name">位置探针</string>
+    <string name="probe_title">位置探针</string>
+    <string name="probe_desc">这是一个和影位完全独立的 App。它只做一件事：向系统读取当前定位，用来验证模拟位置是否对所有 App 生效。</string>
+    <string name="probe_refresh">刷新</string>
+    <string name="probe_wait">读取中…</string>
+</resources>
